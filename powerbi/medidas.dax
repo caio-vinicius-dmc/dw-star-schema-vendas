@@ -1,0 +1,135 @@
+// Medidas DAX para o modelo importado do schema bi.
+//
+// Como usar: no Power BI Desktop, "Nova medida" e cole o corpo de cada uma.
+// Nao existe importacao em lote de .dax no Power BI, entao o arquivo serve
+// como fonte unica da definicao -- quando a regra muda, muda aqui primeiro.
+//
+// O modelo esperado e o de tabelas separadas (dim_data, dim_cliente,
+// dim_produto, dim_loja, fato_venda), com dim_data marcada como tabela de
+// datas. Ver docs/power-bi.md.
+
+// ---------------------------------------------------------------------------
+// Medidas base
+// ---------------------------------------------------------------------------
+
+Receita =
+SUM ( fato_venda[valor_liquido] )
+
+Receita Bruta =
+SUM ( fato_venda[valor_bruto] )
+
+Desconto Concedido =
+SUM ( fato_venda[desconto] )
+
+Custo =
+SUM ( fato_venda[custo_total] )
+
+Margem =
+SUM ( fato_venda[margem] )
+
+Itens Vendidos =
+SUM ( fato_venda[quantidade] )
+
+// DISTINCTCOUNT porque o grao do fato e o item, nao o pedido: um pedido de
+// quatro itens sao quatro linhas e um COUNTROWS contaria quatro pedidos.
+Pedidos =
+DISTINCTCOUNT ( fato_venda[id_pedido] )
+
+Clientes Ativos =
+DISTINCTCOUNT ( fato_venda[sk_cliente] )
+
+// ---------------------------------------------------------------------------
+// Indicadores derivados
+// ---------------------------------------------------------------------------
+
+// DIVIDE em vez do operador "/": ele devolve BLANK em vez de erro quando o
+// denominador e zero, e um filtro que nao retorna nada e situacao normal
+// num relatorio interativo.
+Margem % =
+DIVIDE ( [Margem], [Receita] )
+
+Desconto % =
+DIVIDE ( [Desconto Concedido], [Receita Bruta] )
+
+Ticket Medio =
+DIVIDE ( [Receita], [Pedidos] )
+
+Itens por Pedido =
+DIVIDE ( [Itens Vendidos], [Pedidos] )
+
+Receita por Cliente =
+DIVIDE ( [Receita], [Clientes Ativos] )
+
+// ---------------------------------------------------------------------------
+// Inteligencia de tempo
+// ---------------------------------------------------------------------------
+// Todas dependem de dim_data estar marcada como tabela de datas no modelo.
+// Sem isso as funcoes abaixo devolvem resultado errado em silencio --
+// normalmente o mesmo valor do periodo atual.
+
+Receita Mes Anterior =
+CALCULATE ( [Receita], DATEADD ( dim_data[data], -1, MONTH ) )
+
+Receita Ano Anterior =
+CALCULATE ( [Receita], SAMEPERIODLASTYEAR ( dim_data[data] ) )
+
+Variacao MoM % =
+VAR Anterior = [Receita Mes Anterior]
+RETURN
+    DIVIDE ( [Receita] - Anterior, Anterior )
+
+Variacao YoY % =
+VAR Anterior = [Receita Ano Anterior]
+RETURN
+    DIVIDE ( [Receita] - Anterior, Anterior )
+
+Receita YTD =
+TOTALYTD ( [Receita], dim_data[data] )
+
+// Media movel de tres meses. O DATESINPERIOD parte do ultimo dia do
+// contexto atual e volta tres meses; dividir por 3 fixo daria numero errado
+// nos primeiros meses da base.
+Receita Media 3M =
+VAR Janela =
+    DATESINPERIOD ( dim_data[data], MAX ( dim_data[data] ), -3, MONTH )
+VAR MesesComVenda =
+    CALCULATE ( DISTINCTCOUNT ( dim_data[ano_mes] ), Janela )
+RETURN
+    DIVIDE ( CALCULATE ( [Receita], Janela ), MesesComVenda )
+
+// ---------------------------------------------------------------------------
+// Participacao e ranking
+// ---------------------------------------------------------------------------
+
+// ALLSELECTED respeita os filtros de pagina e segmentacao, mas ignora o
+// contexto da linha. E o que faz o percentual somar 100% dentro do que o
+// usuario esta olhando, e nao dentro da base inteira.
+Participacao na Receita % =
+DIVIDE ( [Receita], CALCULATE ( [Receita], ALLSELECTED ( dim_produto ) ) )
+
+Participacao por Regiao % =
+DIVIDE ( [Receita], CALCULATE ( [Receita], ALLSELECTED ( dim_loja[regiao] ) ) )
+
+Ranking de Receita =
+RANKX ( ALLSELECTED ( dim_produto[nome] ), [Receita], , DESC, DENSE )
+
+// ---------------------------------------------------------------------------
+// Rotulos
+// ---------------------------------------------------------------------------
+
+// Medida de texto para o cartao de resumo. SELECTEDVALUE devolve BLANK
+// quando ha mais de um valor no contexto, e o terceiro argumento cobre esse
+// caso com um rotulo legivel.
+Periodo Selecionado =
+SELECTEDVALUE ( dim_data[ano_mes], "Varios meses" )
+
+Sinal da Variacao =
+VAR V = [Variacao MoM %]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( V ), "sem base de comparacao",
+        V > 0.02, "crescimento",
+        V < -0.02, "queda",
+        "estavel"
+    )
